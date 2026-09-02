@@ -3,8 +3,8 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 // ─────────────────────────────────────────────────────────────────────────────
 // CONFIG — fill these in before deploying
 // ─────────────────────────────────────────────────────────────────────────────
-const MOD_PASSWORD = 'BeccaIsStinky'         // change this!
-const FIREBASE_URL = 'https://overlay-7162f-default-rtdb.europe-west1.firebasedatabase.app/' // e.g. https://my-project-default-rtdb.firebaseio.com
+const MOD_PASSWORD = 'streammod2024'         // change this!
+const FIREBASE_URL = 'YOUR_FIREBASE_URL_HERE' // e.g. https://my-project-default-rtdb.firebaseio.com
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -67,14 +67,48 @@ function Overlay() {
     return () => clearInterval(id)
   }, [])
 
+  const autoClear = useCallback(async () => {
+    try {
+      const cleared = { ...DEFAULT_STATE, timestamp: Date.now() }
+      await fbSet(cleared)
+      setState(cleared)
+      lastTs.current = cleared.timestamp
+    } catch (_) {}
+  }, [])
+
+  // YouTube IFrame API sends postMessage when video ends (state 0)
+  useEffect(() => {
+    const handler = (e) => {
+      try {
+        const data = typeof e.data === 'string' ? JSON.parse(e.data) : e.data
+        if (data?.event === 'onStateChange' && data?.info === 0) autoClear()
+      } catch (_) {}
+    }
+    window.addEventListener('message', handler)
+    return () => window.removeEventListener('message', handler)
+  }, [autoClear])
+
   const ytId = state.url ? parseYouTubeId(state.url) : null
 
   return (
     <div style={{
       width: '100vw', height: '100vh', background: 'transparent',
       display: 'flex', alignItems: 'center', justifyContent: 'center',
-      overflow: 'hidden',
+      overflow: 'hidden', position: 'relative',
     }}>
+      {/* Resize grip — visible in bottom-right corner */}
+      <div style={{
+        position: 'absolute', bottom: 0, right: 0,
+        width: 40, height: 40, cursor: 'nwse-resize',
+        display: 'flex', alignItems: 'flex-end', justifyContent: 'flex-end',
+        padding: 6, boxSizing: 'border-box', zIndex: 9999,
+      }}>
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <line x1="14" y1="2" x2="2" y2="14" stroke="white" strokeWidth="1.5" strokeOpacity="0.6"/>
+          <line x1="14" y1="7" x2="7" y2="14" stroke="white" strokeWidth="1.5" strokeOpacity="0.6"/>
+          <line x1="14" y1="12" x2="12" y2="14" stroke="white" strokeWidth="1.5" strokeOpacity="0.6"/>
+        </svg>
+      </div>
       {state.active && state.type === 'image' && (
         <img
           key={state.timestamp}
@@ -87,7 +121,7 @@ function Overlay() {
       {state.active && state.type === 'video' && ytId && (
         <iframe
           key={state.timestamp}
-          src={`https://www.youtube.com/embed/${ytId}?autoplay=1&loop=${state.loop ? 1 : 0}&playlist=${ytId}`}
+          src={`https://www.youtube.com/embed/${ytId}?autoplay=1&loop=${state.loop ? 1 : 0}&playlist=${ytId}&enablejsapi=1`}
           allow="autoplay; fullscreen"
           style={{ width: '100%', height: '100%', border: 'none' }}
         />
@@ -99,6 +133,7 @@ function Overlay() {
           src={state.url}
           autoPlay
           loop={state.loop}
+          onEnded={() => { if (!state.loop) autoClear() }}
           style={{ maxWidth: '100%', maxHeight: '100%', objectFit: state.fit || 'contain' }}
         />
       )}
