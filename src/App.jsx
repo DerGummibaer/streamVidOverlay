@@ -97,12 +97,20 @@ function Overlay() {
       overflow: 'hidden', position: 'relative',
     }}>
       {/* Resize grip — visible in bottom-right corner */}
-      <div style={{
-        position: 'absolute', bottom: 0, right: 0,
-        width: 40, height: 40, cursor: 'nwse-resize',
-        display: 'flex', alignItems: 'flex-end', justifyContent: 'flex-end',
-        padding: 6, boxSizing: 'border-box', zIndex: 9999,
-      }}>
+      <div
+        style={{
+          position: 'absolute', bottom: 0, right: 0,
+          width: 40, height: 40, cursor: 'nwse-resize',
+          display: 'flex', alignItems: 'flex-end', justifyContent: 'flex-end',
+          padding: 6, boxSizing: 'border-box', zIndex: 9999,
+        }}
+        onMouseEnter={() => {
+          if (window.__TAURI__) window.__TAURI__.core.invoke('set_clickthrough', { enabled: false })
+        }}
+        onMouseLeave={() => {
+          if (window.__TAURI__) window.__TAURI__.core.invoke('set_clickthrough', { enabled: true })
+        }}
+      >
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
           <line x1="14" y1="2" x2="2" y2="14" stroke="white" strokeWidth="1.5" strokeOpacity="0.6"/>
           <line x1="14" y1="7" x2="7" y2="14" stroke="white" strokeWidth="1.5" strokeOpacity="0.6"/>
