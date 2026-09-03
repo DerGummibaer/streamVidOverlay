@@ -143,11 +143,13 @@ function Overlay() {
               style={{ width: '100%', height: '100%', objectFit: state.fit || 'contain' }} />
           )}
           {state.type === 'video' && ytId && (
-            <iframe key={state.timestamp}
-              ref={iframeRef}
-              src={`https://www.youtube.com/embed/${ytId}?autoplay=1&loop=${state.loop ? 1 : 0}&playlist=${ytId}&enablejsapi=1&start=${startSecs}&origin=${encodeURIComponent(window.location.origin)}&controls=0&modestbranding=1&rel=0`}
-              allow="autoplay; fullscreen"
-              style={{ width: '100%', height: '100%', border: 'none' }} />
+            <div style={{ width: '100%', height: '100%', overflow: 'hidden', position: 'relative' }}>
+              <iframe key={state.timestamp}
+                ref={iframeRef}
+                src={`https://www.youtube.com/embed/${ytId}?autoplay=1&loop=${state.loop ? 1 : 0}&playlist=${ytId}&enablejsapi=1&start=${startSecs}&origin=${encodeURIComponent(window.location.origin)}&rel=0`}
+                allow="autoplay; fullscreen"
+                style={{ width: '100%', height: 'calc(100% + 80px)', border: 'none', marginBottom: '-80px' }} />
+            </div>
           )}
           {state.type === 'video' && !ytId && (
             <video key={state.timestamp} src={state.url} autoPlay loop={state.loop}
