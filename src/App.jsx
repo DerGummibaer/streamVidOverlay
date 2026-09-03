@@ -76,16 +76,51 @@ function Overlay() {
     } catch (_) {}
   }, [])
 
+  // YouTube: poll the iframe via postMessage every 2s to check if ended
+  const iframeRef = useRef(null)
+  const ytPollRef = useRef(null)
+  useEffect(() => {
+    if (ytPollRef.current) clearInterval(ytPollRef.current)
+    if (!state.active || !parseYouTubeId(state.url || '')) return
+    // Send a listen request to the YT iframe API
+    const sendListen = () => {
+      if (!iframeRef.current) return
+      try {
+        iframeRef.current.contentWindow.postMessage(
+          JSON.stringify({ event: 'listening', id: 1 }), '*'
+        )
+      } catch (_) {}
+    }
+    // Poll by requesting player state every 2s
+    ytPollRef.current = setInterval(() => {
+      if (!iframeRef.current) return
+      try {
+        iframeRef.current.contentWindow.postMessage(
+          JSON.stringify({ event: 'command', func: 'getPlayerState', args: [] }), '*'
+        )
+      } catch (_) {}
+    }, 2000)
+    setTimeout(sendListen, 1000)
+    return () => clearInterval(ytPollRef.current)
+  }, [state.active, state.url, state.timestamp])
+
   useEffect(() => {
     const handler = (e) => {
       try {
         const data = typeof e.data === 'string' ? JSON.parse(e.data) : e.data
-        if (data?.event === 'onStateChange' && data?.info === 0) autoClear()
+        // YT state 0 = ended, -1 = unstarted, 1 = playing, 2 = paused, 3 = buffering
+        if (data?.event === 'onStateChange' && data?.info === 0) {
+          if (!state.loop) autoClear()
+        }
+        // Also handle infoDelivery which some YT builds use
+        if (data?.event === 'infoDelivery' && data?.info?.playerState === 0) {
+          if (!state.loop) autoClear()
+        }
       } catch (_) {}
     }
     window.addEventListener('message', handler)
     return () => window.removeEventListener('message', handler)
-  }, [autoClear])
+  }, [autoClear, state.loop])
 
   const ytId = state.url ? parseYouTubeId(state.url) : null
   const startSecs = state.startAt || 0
@@ -109,7 +144,8 @@ function Overlay() {
           )}
           {state.type === 'video' && ytId && (
             <iframe key={state.timestamp}
-              src={`https://www.youtube.com/embed/${ytId}?autoplay=1&loop=${state.loop ? 1 : 0}&playlist=${ytId}&enablejsapi=1&start=${startSecs}`}
+              ref={iframeRef}
+              src={`https://www.youtube.com/embed/${ytId}?autoplay=1&loop=${state.loop ? 1 : 0}&playlist=${ytId}&enablejsapi=1&start=${startSecs}&origin=${encodeURIComponent(window.location.origin)}&controls=0&modestbranding=1&rel=0`}
               allow="autoplay; fullscreen"
               style={{ width: '100%', height: '100%', border: 'none' }} />
           )}
