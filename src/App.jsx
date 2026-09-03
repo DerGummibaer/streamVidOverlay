@@ -146,7 +146,7 @@ function Overlay() {
             <div style={{ width: '100%', height: '100%', overflow: 'hidden', position: 'relative' }}>
               <iframe key={state.timestamp}
                 ref={iframeRef}
-                src={`https://www.youtube.com/embed/${ytId}?autoplay=1&loop=${state.loop ? 1 : 0}&playlist=${ytId}&enablejsapi=1&start=${startSecs}&origin=${encodeURIComponent(window.location.origin)}&rel=0`}
+                src={`https://www.youtube.com/embed/${ytId}?autoplay=1&loop=${state.loop ? 1 : 0}&playlist=${ytId}&enablejsapi=1&start=${startSecs}&origin=${encodeURIComponent(window.location.origin)}&rel=0${state.endAt > 0 ? `&end=${state.endAt}` : ``}`}
                 allow="autoplay; fullscreen"
                 style={{ width: '100%', height: 'calc(100% + 80px)', border: 'none', marginBottom: '-80px' }} />
             </div>
@@ -155,6 +155,7 @@ function Overlay() {
             <video key={state.timestamp} src={state.url} autoPlay loop={state.loop}
               onEnded={() => { if (!state.loop) autoClear() }}
               onLoadedMetadata={e => { if (startSecs > 0) e.target.currentTime = startSecs }}
+              onTimeUpdate={e => { if (state.endAt > 0 && e.target.currentTime >= state.endAt) { e.target.pause(); if (!state.loop) autoClear() } }}
               style={{ width: '100%', height: '100%', objectFit: state.fit || 'contain' }} />
           )}
         </div>
@@ -266,6 +267,7 @@ function ControlPanel() {
   const [loop, setLoop] = useState(false)
   const [fit, setFit] = useState('contain')
   const [startAt, setStartAt] = useState('')
+  const [endAt, setEndAt] = useState('')
   const [urlErr, setUrlErr] = useState('')
   const [saving, setSaving] = useState(false)
   const [toast, setToast] = useState('')
@@ -326,14 +328,14 @@ function ControlPanel() {
     const type = detectType(url.trim())
     if (!type) { setUrlErr('Must be a YouTube link, video or image URL'); return }
     setUrlErr('')
-    await push({ active: true, type, url: url.trim(), label, volume, loop, fit, startAt: parseTimestamp(startAt), ...box })
+    await push({ active: true, type, url: url.trim(), label, volume, loop, fit, startAt: parseTimestamp(startAt), endAt: parseTimestamp(endAt), ...box })
   }
 
   const handleClear = () => push({ ...DEFAULT_STATE, active: false, ...box })
 
   const savePreset = () => {
     if (!url.trim() || !presetName.trim()) return
-    const p = { name: presetName, url, label, volume, loop, fit, startAt }
+    const p = { name: presetName, url, label, volume, loop, fit, startAt, endAt }
     const updated = [...presets.filter(x => x.name !== presetName), p]
     setPresets(updated)
     localStorage.setItem('stream-mod-presets', JSON.stringify(updated))
@@ -350,7 +352,7 @@ function ControlPanel() {
   const sendPreset = (p) => push({
     active: true, type: detectType(p.url),
     url: p.url, label: p.label, volume: p.volume,
-    loop: p.loop, fit: p.fit, startAt: parseTimestamp(p.startAt || ''), ...box,
+    loop: p.loop, fit: p.fit, startAt: parseTimestamp(p.startAt || ''), endAt: parseTimestamp(p.endAt || ''), ...box,
   })
 
   const isVideoUrl = (u) => u && (parseYouTubeId(u) || /\.(mp4|webm|ogg|mov)(\?|$)/i.test(u))
@@ -420,7 +422,7 @@ function ControlPanel() {
               </span>
               <span style={{ fontSize: 12, color: '#16a34a', marginLeft: 8, opacity: 0.8 }}>
                 {liveState.type} · {liveState.fit}
-                {liveState.startAt > 0 && ` · @${liveState.startAt}s`}
+                {liveState.startAt > 0 && ` · @${liveState.startAt}s`}{liveState.endAt > 0 && ` → ${liveState.endAt}s`}
                 {liveState.loop && ' · looping'}
               </span>
             </div>
@@ -458,11 +460,19 @@ function ControlPanel() {
           </div>
 
           {isVideoUrl(url) && (
-            <div style={{ marginBottom: 12 }}>
-              <label style={s.label}>Start at (optional)</label>
-              <input type="text" placeholder="e.g. 1:23 or 83"
-                value={startAt} onChange={e => setStartAt(e.target.value)}
-                style={{ ...s.input, width: 180 }} />
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+              <div>
+                <label style={s.label}>Start at (optional)</label>
+                <input type="text" placeholder="e.g. 1:23 or 83"
+                  value={startAt} onChange={e => setStartAt(e.target.value)}
+                  style={{ ...s.input }} />
+              </div>
+              <div>
+                <label style={s.label}>End at (optional)</label>
+                <input type="text" placeholder="e.g. 2:45 or 165"
+                  value={endAt} onChange={e => setEndAt(e.target.value)}
+                  style={{ ...s.input }} />
+              </div>
             </div>
           )}
 
@@ -487,13 +497,13 @@ function ControlPanel() {
                 <span style={{ fontSize: 14, fontWeight: 500 }}>{p.name}</span>
                 <span style={{ fontSize: 12, color: '#9ca3af', marginLeft: 8 }}>
                   {p.url.slice(0, 38)}{p.url.length > 38 ? '…' : ''}
-                  {p.startAt && ` · ${p.startAt}`}
+                  {p.startAt && ` · ${p.startAt}`}{p.endAt && ` → ${p.endAt}`}
                 </span>
               </div>
               <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
                 <button style={s.smBtn} onClick={() => {
                   setUrl(p.url); setLabel(p.label); setVolume(p.volume)
-                  setLoop(p.loop); setFit(p.fit); setStartAt(p.startAt || '')
+                  setLoop(p.loop); setFit(p.fit); setStartAt(p.startAt || ''); setEndAt(p.endAt || '')
                 }}>Load</button>
                 <button style={s.smBtn} onClick={() => sendPreset(p)}>Send</button>
                 <button style={{ ...s.smBtn, color: '#ef4444', borderColor: '#fca5a5' }}
