@@ -1,11 +1,14 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 
-const MOD_PASSWORD = 'BeccaIsStinky'
-const FIREBASE_URL = 'https://overlay-7162f-default-rtdb.europe-west1.firebasedatabase.app/'
+const MOD_PASSWORD = 'streammod2024'
+const FIREBASE_URL = 'https://overlay-7162f-default-rtdb.europe-west1.firebasedatabase.app'
 
 const DEFAULT_STATE = {
   active: false, type: null, url: '', label: '',
-  volume: 80, loop: false, fit: 'contain', startAt: 0, timestamp: 0,
+  volume: 80, loop: false, fit: 'contain', startAt: 0,
+  // Video box position/size as % of stream canvas (1920x1080)
+  boxX: 25, boxY: 25, boxW: 50, boxH: 50,
+  timestamp: 0,
 }
 
 function parseYouTubeId(url) {
@@ -20,7 +23,6 @@ function detectType(url) {
   return null
 }
 
-// Parse timestamp string like "1:23", "83", "1:23:45" into seconds
 function parseTimestamp(str) {
   if (!str || !str.trim()) return 0
   const parts = str.trim().split(':').map(Number)
@@ -45,24 +47,7 @@ async function fbSet(data) {
   if (!res.ok) throw new Error('Firebase write failed')
 }
 
-// Upload file to transfer.sh (free, no account needed, files expire in 14 days)
-async function uploadFile(file, onProgress) {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest()
-    xhr.upload.addEventListener('progress', e => {
-      if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100))
-    })
-    xhr.addEventListener('load', () => {
-      if (xhr.status === 200) resolve(xhr.responseText.trim())
-      else reject(new Error('Upload failed'))
-    })
-    xhr.addEventListener('error', () => reject(new Error('Upload failed')))
-    xhr.open('PUT', `https://transfer.sh/${encodeURIComponent(file.name)}`)
-    xhr.send(file)
-  })
-}
-
-// ─── Overlay ──────────────────────────────────────────────────────────────────
+// ─── Overlay (runs in Tauri app at #overlay) ──────────────────────────────────
 function Overlay() {
   const [state, setState] = useState(DEFAULT_STATE)
   const lastTs = useRef(0)
@@ -105,28 +90,129 @@ function Overlay() {
   const ytId = state.url ? parseYouTubeId(state.url) : null
   const startSecs = state.startAt || 0
 
+  const boxStyle = {
+    position: 'absolute',
+    left: `${state.boxX}%`,
+    top: `${state.boxY}%`,
+    width: `${state.boxW}%`,
+    height: `${state.boxH}%`,
+    overflow: 'hidden',
+  }
+
   return (
-    <div style={{
-      width: '100vw', height: '100vh', background: 'transparent',
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-      overflow: 'hidden',
+    <div style={{ width: '100vw', height: '100vh', background: 'transparent', position: 'relative', overflow: 'hidden' }}>
+      {state.active && (
+        <div style={boxStyle}>
+          {state.type === 'image' && (
+            <img key={state.timestamp} src={state.url} alt=""
+              style={{ width: '100%', height: '100%', objectFit: state.fit || 'contain' }} />
+          )}
+          {state.type === 'video' && ytId && (
+            <iframe key={state.timestamp}
+              src={`https://www.youtube.com/embed/${ytId}?autoplay=1&loop=${state.loop ? 1 : 0}&playlist=${ytId}&enablejsapi=1&start=${startSecs}`}
+              allow="autoplay; fullscreen"
+              style={{ width: '100%', height: '100%', border: 'none' }} />
+          )}
+          {state.type === 'video' && !ytId && (
+            <video key={state.timestamp} src={state.url} autoPlay loop={state.loop}
+              onEnded={() => { if (!state.loop) autoClear() }}
+              onLoadedMetadata={e => { if (startSecs > 0) e.target.currentTime = startSecs }}
+              style={{ width: '100%', height: '100%', objectFit: state.fit || 'contain' }} />
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Draggable/resizable box in preview ───────────────────────────────────────
+function PreviewBox({ box, onChange }) {
+  const ref = useRef()
+  const drag = useRef(null)
+
+  const onMouseDown = (e, mode) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const rect = ref.current.parentElement.getBoundingClientRect()
+    drag.current = {
+      mode,
+      startX: e.clientX, startY: e.clientY,
+      origBox: { ...box },
+      parentW: rect.width, parentH: rect.height,
+      parentLeft: rect.left, parentTop: rect.top,
+    }
+  }
+
+  useEffect(() => {
+    const onMove = (e) => {
+      if (!drag.current) return
+      const { mode, startX, startY, origBox, parentW, parentH } = drag.current
+      const dx = (e.clientX - startX) / parentW * 100
+      const dy = (e.clientY - startY) / parentH * 100
+
+      let { boxX, boxY, boxW, boxH } = origBox
+      if (mode === 'move') {
+        boxX = Math.max(0, Math.min(100 - boxW, origBox.boxX + dx))
+        boxY = Math.max(0, Math.min(100 - boxH, origBox.boxY + dy))
+      } else {
+        if (mode.includes('e')) boxW = Math.max(5, Math.min(100 - origBox.boxX, origBox.boxW + dx))
+        if (mode.includes('s')) boxH = Math.max(5, Math.min(100 - origBox.boxY, origBox.boxH + dy))
+        if (mode.includes('w')) {
+          const newW = Math.max(5, origBox.boxW - dx)
+          boxX = origBox.boxX + origBox.boxW - newW
+          boxW = newW
+        }
+        if (mode.includes('n')) {
+          const newH = Math.max(5, origBox.boxH - dy)
+          boxY = origBox.boxY + origBox.boxH - newH
+          boxH = newH
+        }
+      }
+      onChange({ boxX, boxY, boxW, boxH })
+    }
+    const onUp = () => { drag.current = null }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+  }, [onChange])
+
+  const handle = (cursor, mode, style) => (
+    <div onMouseDown={e => onMouseDown(e, mode)}
+      style={{ position: 'absolute', cursor, zIndex: 10, ...style }} />
+  )
+  const hs = 10 // handle size
+
+  return (
+    <div ref={ref} style={{
+      position: 'absolute',
+      left: `${box.boxX}%`, top: `${box.boxY}%`,
+      width: `${box.boxW}%`, height: `${box.boxH}%`,
+      border: '2px solid #3b82f6',
+      boxSizing: 'border-box',
+      background: 'rgba(59,130,246,0.15)',
     }}>
-      {state.active && state.type === 'image' && (
-        <img key={state.timestamp} src={state.url} alt=""
-          style={{ maxWidth: '100%', maxHeight: '100%', objectFit: state.fit || 'contain' }} />
-      )}
-      {state.active && state.type === 'video' && ytId && (
-        <iframe key={state.timestamp}
-          src={`https://www.youtube.com/embed/${ytId}?autoplay=1&loop=${state.loop ? 1 : 0}&playlist=${ytId}&enablejsapi=1&start=${startSecs}`}
-          allow="autoplay; fullscreen"
-          style={{ width: '100%', height: '100%', border: 'none' }} />
-      )}
-      {state.active && state.type === 'video' && !ytId && (
-        <video key={state.timestamp} src={state.url} autoPlay loop={state.loop}
-          onEnded={() => { if (!state.loop) autoClear() }}
-          onLoadedMetadata={e => { if (startSecs > 0) e.target.currentTime = startSecs }}
-          style={{ maxWidth: '100%', maxHeight: '100%', objectFit: state.fit || 'contain' }} />
-      )}
+      {/* Move area */}
+      <div onMouseDown={e => onMouseDown(e, 'move')} style={{
+        position: 'absolute', inset: hs, cursor: 'move',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}>
+        <span style={{ fontSize: 11, color: '#fff', background: 'rgba(0,0,0,0.5)', padding: '2px 6px', borderRadius: 4, pointerEvents: 'none', userSelect: 'none' }}>
+          drag to move
+        </span>
+      </div>
+      {/* Edge handles */}
+      {handle('ns-resize', 'n',  { top: 0, left: hs, right: hs, height: hs })}
+      {handle('ns-resize', 's',  { bottom: 0, left: hs, right: hs, height: hs })}
+      {handle('ew-resize', 'w',  { left: 0, top: hs, bottom: hs, width: hs })}
+      {handle('ew-resize', 'e',  { right: 0, top: hs, bottom: hs, width: hs })}
+      {/* Corner handles */}
+      {handle('nwse-resize', 'nw', { top: 0, left: 0, width: hs, height: hs })}
+      {handle('nesw-resize', 'ne', { top: 0, right: 0, width: hs, height: hs })}
+      {handle('nesw-resize', 'sw', { bottom: 0, left: 0, width: hs, height: hs })}
+      {handle('nwse-resize', 'se', { bottom: 0, right: 0, width: hs, height: hs })}
     </div>
   )
 }
@@ -136,7 +222,6 @@ function ControlPanel() {
   const [authed, setAuthed] = useState(false)
   const [pw, setPw] = useState('')
   const [pwErr, setPwErr] = useState('')
-
   const [url, setUrl] = useState('')
   const [label, setLabel] = useState('')
   const [volume, setVolume] = useState(80)
@@ -145,14 +230,12 @@ function ControlPanel() {
   const [startAt, setStartAt] = useState('')
   const [urlErr, setUrlErr] = useState('')
   const [saving, setSaving] = useState(false)
-  const [uploading, setUploading] = useState(false)
-  const [uploadProgress, setUploadProgress] = useState(0)
-  const [uploadErr, setUploadErr] = useState('')
   const [toast, setToast] = useState('')
   const [liveState, setLiveState] = useState(DEFAULT_STATE)
   const [presets, setPresets] = useState([])
   const [presetName, setPresetName] = useState('')
-  const fileRef = useRef()
+  const [box, setBox] = useState({ boxX: 25, boxY: 25, boxW: 50, boxH: 50 })
+  const boxPushTimer = useRef(null)
 
   useEffect(() => {
     const saved = localStorage.getItem('stream-mod-presets')
@@ -162,7 +245,13 @@ function ControlPanel() {
   useEffect(() => {
     if (!authed) return
     const poll = async () => {
-      try { const d = await fbGet(); if (d) setLiveState(d) } catch (_) {}
+      try {
+        const d = await fbGet()
+        if (d) {
+          setLiveState(d)
+          setBox({ boxX: d.boxX ?? 25, boxY: d.boxY ?? 25, boxW: d.boxW ?? 50, boxH: d.boxH ?? 50 })
+        }
+      } catch (_) {}
     }
     poll()
     const id = setInterval(poll, 1000)
@@ -173,43 +262,36 @@ function ControlPanel() {
 
   const push = async (patch) => {
     setSaving(true)
-    const next = { ...liveState, ...patch, timestamp: Date.now() }
+    const next = { ...liveState, ...box, ...patch, timestamp: Date.now() }
     try {
       await fbSet(next)
       setLiveState(next)
       showToast(patch.active === false ? 'Overlay cleared' : 'Overlay updated')
-    } catch {
-      showToast('Error — check your Firebase URL')
-    }
+    } catch { showToast('Firebase error') }
     setSaving(false)
   }
+
+  // Push box position debounced while dragging
+  const handleBoxChange = useCallback((newBox) => {
+    setBox(newBox)
+    if (boxPushTimer.current) clearTimeout(boxPushTimer.current)
+    boxPushTimer.current = setTimeout(async () => {
+      try {
+        const current = await fbGet()
+        if (current) await fbSet({ ...current, ...newBox, timestamp: Date.now() })
+      } catch (_) {}
+    }, 150)
+  }, [])
 
   const handleSend = async () => {
     if (!url.trim()) { setUrlErr('Enter a URL'); return }
     const type = detectType(url.trim())
-    if (!type) { setUrlErr('Must be a YouTube link, video (.mp4 .webm .mov) or image (.jpg .png .gif .webp .avif)'); return }
+    if (!type) { setUrlErr('Must be a YouTube link, video or image URL'); return }
     setUrlErr('')
-    await push({ active: true, type, url: url.trim(), label, volume, loop, fit, startAt: parseTimestamp(startAt) })
+    await push({ active: true, type, url: url.trim(), label, volume, loop, fit, startAt: parseTimestamp(startAt), ...box })
   }
 
-  const handleClear = () => push({ ...DEFAULT_STATE, active: false })
-
-  const handleFileUpload = async (e) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    setUploadErr('')
-    setUploading(true)
-    setUploadProgress(0)
-    try {
-      const uploadedUrl = await uploadFile(file, setUploadProgress)
-      setUrl(uploadedUrl)
-      showToast('Uploaded! URL filled in — hit Send to overlay.')
-    } catch {
-      setUploadErr('Upload failed. Try a direct URL instead.')
-    }
-    setUploading(false)
-    e.target.value = ''
-  }
+  const handleClear = () => push({ ...DEFAULT_STATE, active: false, ...box })
 
   const savePreset = () => {
     if (!url.trim() || !presetName.trim()) return
@@ -230,10 +312,10 @@ function ControlPanel() {
   const sendPreset = (p) => push({
     active: true, type: detectType(p.url),
     url: p.url, label: p.label, volume: p.volume,
-    loop: p.loop, fit: p.fit, startAt: parseTimestamp(p.startAt || ''),
+    loop: p.loop, fit: p.fit, startAt: parseTimestamp(p.startAt || ''), ...box,
   })
 
-  const isVideoUrl = (u) => u && (parseYouTubeId(u) || /\.(mp4|webm|ogg|mov|avi|mkv)(\?|$)/i.test(u))
+  const isVideoUrl = (u) => u && (parseYouTubeId(u) || /\.(mp4|webm|ogg|mov)(\?|$)/i.test(u))
 
   if (!authed) {
     return (
@@ -272,16 +354,35 @@ function ControlPanel() {
           </div>
         </div>
 
+        {/* Stream preview with draggable box */}
+        <div style={s.card}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+            <label style={{ ...s.label, marginBottom: 0 }}>Stream preview — drag to position</label>
+            <span style={{ fontSize: 11, color: '#64748b' }}>
+              {Math.round(box.boxX)}% {Math.round(box.boxY)}% · {Math.round(box.boxW)}×{Math.round(box.boxH)}%
+            </span>
+          </div>
+          <div style={{ position: 'relative', width: '100%', paddingBottom: '56.25%', borderRadius: 8, overflow: 'hidden', background: '#000' }}>
+            {/* Twitch stream embed */}
+            <iframe
+              src="https://player.twitch.tv/?channel=beccahtw&parent=dergummibaer.github.io&muted=true"
+              allowFullScreen
+              style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', border: 'none' }}
+            />
+            {/* Draggable overlay box */}
+            <PreviewBox box={box} onChange={handleBoxChange} />
+          </div>
+        </div>
+
         {liveState.active && (
           <div style={s.liveBar}>
             <div>
               <span style={{ fontWeight: 500, color: '#15803d', fontSize: 14 }}>
-                {liveState.label || liveState.url.slice(0, 60)}
+                {liveState.label || liveState.url.slice(0, 55)}
               </span>
               <span style={{ fontSize: 12, color: '#16a34a', marginLeft: 8, opacity: 0.8 }}>
                 {liveState.type} · {liveState.fit}
-                {liveState.type === 'video' && ` · ${liveState.volume}%`}
-                {liveState.startAt > 0 && ` · starts at ${liveState.startAt}s`}
+                {liveState.startAt > 0 && ` · @${liveState.startAt}s`}
                 {liveState.loop && ' · looping'}
               </span>
             </div>
@@ -290,34 +391,17 @@ function ControlPanel() {
         )}
 
         <div style={s.card}>
-          {/* URL input */}
           <label style={s.label}>URL</label>
-          <input type="url" placeholder="YouTube link, .mp4, .webm, .mov, .jpg, .png, .gif, .webp…"
+          <input type="url" placeholder="YouTube link, .mp4, .webm, .jpg, .png, .gif…"
             value={url} onChange={e => { setUrl(e.target.value); setUrlErr('') }}
-            style={{ ...s.input, marginBottom: 8 }} />
-
-          {/* Upload button */}
-          <div style={{ marginBottom: urlErr ? 4 : 12 }}>
-            <input ref={fileRef} type="file"
-              accept="video/mp4,video/webm,video/ogg,video/quicktime,video/x-msvideo,video/x-matroska,image/jpeg,image/png,image/gif,image/webp,image/avif,image/svg+xml,image/bmp"
-              style={{ display: 'none' }} onChange={handleFileUpload} />
-            <button style={s.uploadBtn} onClick={() => fileRef.current.click()} disabled={uploading}>
-              {uploading ? `Uploading… ${uploadProgress}%` : '↑ Upload file'}
-            </button>
-            <span style={{ fontSize: 12, color: '#94a3b8', marginLeft: 10 }}>
-              mp4 · webm · mov · jpg · png · gif · webp · avif · svg · bmp
-            </span>
-          </div>
-          {uploadErr && <div style={{ ...s.err, marginBottom: 8 }}>{uploadErr}</div>}
+            style={{ ...s.input, marginBottom: urlErr ? 4 : 12 }} />
           {urlErr && <div style={{ ...s.err, marginBottom: 8 }}>{urlErr}</div>}
 
-          {/* Label */}
           <label style={s.label}>Label (optional)</label>
           <input type="text" placeholder="e.g. Raid gif, hype clip…"
             value={label} onChange={e => setLabel(e.target.value)}
             style={{ ...s.input, marginBottom: 12 }} />
 
-          {/* Fit + Volume */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
             <div>
               <label style={s.label}>Fit</label>
@@ -335,39 +419,36 @@ function ControlPanel() {
             </div>
           </div>
 
-          {/* Start at — only shown for video */}
           {isVideoUrl(url) && (
             <div style={{ marginBottom: 12 }}>
               <label style={s.label}>Start at (optional)</label>
-              <input type="text" placeholder="e.g. 1:23 or 83 (seconds)"
+              <input type="text" placeholder="e.g. 1:23 or 83"
                 value={startAt} onChange={e => setStartAt(e.target.value)}
                 style={{ ...s.input, width: 180 }} />
             </div>
           )}
 
-          {/* Loop */}
           <label style={{ ...s.label, display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginBottom: 16 }}>
             <input type="checkbox" checked={loop} onChange={e => setLoop(e.target.checked)} />
             Loop video
           </label>
 
-          <button style={{ ...s.btn, width: '100%' }} onClick={handleSend} disabled={saving || uploading}>
+          <button style={{ ...s.btn, width: '100%' }} onClick={handleSend} disabled={saving}>
             {saving ? 'Sending…' : 'Send to overlay'}
           </button>
         </div>
 
-        {/* Presets */}
         <div style={s.card}>
           <h3 style={s.h3}>Saved presets</h3>
           {presets.length === 0 && (
-            <p style={{ ...s.sub, marginBottom: 12 }}>No presets yet — fill in a URL above and save it.</p>
+            <p style={{ ...s.sub, marginBottom: 12 }}>No presets yet.</p>
           )}
           {presets.map(p => (
             <div key={p.name} style={s.presetRow}>
               <div style={{ minWidth: 0 }}>
                 <span style={{ fontSize: 14, fontWeight: 500 }}>{p.name}</span>
                 <span style={{ fontSize: 12, color: '#9ca3af', marginLeft: 8 }}>
-                  {p.url.slice(0, 40)}{p.url.length > 40 ? '…' : ''}
+                  {p.url.slice(0, 38)}{p.url.length > 38 ? '…' : ''}
                   {p.startAt && ` · ${p.startAt}`}
                 </span>
               </div>
@@ -391,9 +472,7 @@ function ControlPanel() {
         </div>
 
         <button style={{ background: 'none', border: 'none', color: '#9ca3af', fontSize: 12, cursor: 'pointer', marginTop: 8 }}
-          onClick={() => setAuthed(false)}>
-          Sign out
-        </button>
+          onClick={() => setAuthed(false)}>Sign out</button>
       </div>
     </div>
   )
@@ -405,7 +484,7 @@ const s = {
   loginTitle: { margin: '0 0 4px', fontSize: 18, fontWeight: 500, color: '#f1f5f9' },
   loginSub: { margin: '0 0 1.25rem', fontSize: 13, color: '#94a3b8' },
   wrap: { minHeight: '100vh', background: '#0f172a', padding: '1.5rem', boxSizing: 'border-box', fontFamily: 'system-ui, sans-serif', color: '#f1f5f9' },
-  inner: { maxWidth: 640, margin: '0 auto' },
+  inner: { maxWidth: 700, margin: '0 auto' },
   header: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.5rem' },
   h1: { margin: 0, fontSize: 20, fontWeight: 500, color: '#f1f5f9' },
   h3: { margin: '0 0 12px', fontSize: 15, fontWeight: 500, color: '#f1f5f9' },
@@ -416,7 +495,6 @@ const s = {
   input: { width: '100%', boxSizing: 'border-box', background: '#0f172a', border: '1px solid #334155', borderRadius: 6, padding: '8px 10px', color: '#f1f5f9', fontSize: 14, outline: 'none', marginBottom: 0 },
   select: { width: '100%', background: '#0f172a', border: '1px solid #334155', borderRadius: 6, padding: '8px 10px', color: '#f1f5f9', fontSize: 14 },
   btn: { background: '#3b82f6', border: 'none', borderRadius: 6, padding: '9px 18px', color: '#fff', fontSize: 14, fontWeight: 500, cursor: 'pointer' },
-  uploadBtn: { background: 'none', border: '1px solid #334155', borderRadius: 6, padding: '6px 12px', color: '#cbd5e1', fontSize: 13, cursor: 'pointer' },
   smBtn: { background: 'none', border: '1px solid #334155', borderRadius: 6, padding: '4px 10px', color: '#cbd5e1', fontSize: 12, cursor: 'pointer' },
   clearBtn: { background: 'none', border: '1px solid #fca5a5', borderRadius: 6, padding: '4px 12px', color: '#ef4444', fontSize: 13, cursor: 'pointer' },
   err: { fontSize: 13, color: '#ef4444', marginBottom: 4 },
