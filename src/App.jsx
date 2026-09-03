@@ -122,6 +122,33 @@ function Overlay() {
     return () => window.removeEventListener('message', handler)
   }, [autoClear, state.loop])
 
+  // Attempt to block ads by accessing iframe DOM (works when OBS disables web security)
+  useEffect(() => {
+    if (!state.active || !parseYouTubeId(state.url || '')) return
+    const tryBlock = () => {
+      try {
+        const iframe = iframeRef.current
+        if (!iframe) return
+        const doc = iframe.contentDocument || iframe.contentWindow?.document
+        if (!doc) return
+        // Click skip button if present
+        const skip = doc.querySelector('.ytp-ad-skip-button, .ytp-skip-ad-button, .ytp-ad-skip-button-modern')
+        if (skip) skip.click()
+        // Fast-forward ad video to end
+        const adVid = doc.querySelector('.ad-showing video')
+        if (adVid && !adVid.paused) {
+          adVid.muted = true
+          if (adVid.duration) adVid.currentTime = adVid.duration
+        }
+        // Hide ad overlay
+        const adOverlay = doc.querySelector('.ytp-ad-player-overlay-layout')
+        if (adOverlay) adOverlay.remove()
+      } catch (_) {}
+    }
+    const id = setInterval(tryBlock, 200)
+    return () => clearInterval(id)
+  }, [state.active, state.url, state.timestamp])
+
   const ytId = state.url ? parseYouTubeId(state.url) : null
   const startSecs = state.startAt || 0
 
