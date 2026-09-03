@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 
-const MOD_PASSWORD = 'streammod2024'
-const FIREBASE_URL = 'YOUR_FIREBASE_URL_HERE'
+const MOD_PASSWORD = 'BeccaIsStinky'
+const FIREBASE_URL = 'https://overlay-7162f-default-rtdb.europe-west1.firebasedatabase.app/'
 
 const DEFAULT_STATE = {
   active: false, type: null, url: '', label: '',
