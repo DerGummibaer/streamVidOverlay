@@ -656,7 +656,7 @@ const s = {
   label: { fontSize: 13, color: '#94a3b8', display: 'block', marginBottom: 6 },
   input: { width: '100%', boxSizing: 'border-box', background: '#0f172a', border: '1px solid #334155', borderRadius: 6, padding: '8px 10px', color: '#f1f5f9', fontSize: 14, outline: 'none', marginBottom: 0 },
   select: { width: '100%', background: '#0f172a', border: '1px solid #334155', borderRadius: 6, padding: '8px 10px', color: '#f1f5f9', fontSize: 14 },
-  btn: { border: 'none', borderRadius: 6, padding: '9px 18px', color: '#fff', fontSize: 14, fontWeight: 500, cursor: 'pointer' },
+  btn: { background: '#3b82f6', backgroundColor: '#3b82f6', border: 'none', borderRadius: 6, padding: '9px 18px', color: '#fff', fontSize: 14, fontWeight: 500, cursor: 'pointer' },
   tabBtn: { border: '1px solid', borderRadius: 6, padding: '7px 16px', fontSize: 13, fontWeight: 500, cursor: 'pointer' },
   smBtn: { background: 'none', border: '1px solid #334155', borderRadius: 6, padding: '4px 10px', color: '#cbd5e1', fontSize: 12, cursor: 'pointer' },
   clearBtn: { background: 'none', border: '1px solid #fca5a5', borderRadius: 6, padding: '4px 12px', color: '#ef4444', fontSize: 13, cursor: 'pointer', flexShrink: 0 },
