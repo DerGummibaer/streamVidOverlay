@@ -4,14 +4,20 @@ const MOD_PASSWORD = 'streammod2024'
 const FIREBASE_URL = 'https://overlay-7162f-default-rtdb.europe-west1.firebasedatabase.app'
 
 const DEFAULT_ACTIVE = {
-  active: false, type: null, url: '', label: '', modName: '',
-  volume: 80, loop: false, fit: 'contain', startAt: 0, endAt: 0,
+  active: false, type: null, urls: [], label: '', modName: '',
+  loop: false, fit: 'contain', startAt: 0, endAt: 0,
   boxX: 25, boxY: 25, boxW: 50, boxH: 50, timestamp: 0,
 }
 
 function parseYouTubeId(url) {
+  if (!url) return null
+  // Regular videos
   const m = url.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/))([a-zA-Z0-9_-]{11})/)
-  return m ? m[1] : null
+  if (m) return m[1]
+  // Shorts
+  const s = url.match(/youtube\.com\/shorts\/([a-zA-Z0-9_-]{11})/)
+  if (s) return s[1]
+  return null
 }
 
 function detectType(url) {
@@ -31,8 +37,7 @@ function parseTimestamp(str) {
 }
 
 function formatTime(ts) {
-  const d = new Date(ts)
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
 async function fbGet(path = '') {
@@ -43,8 +48,7 @@ async function fbGet(path = '') {
 
 async function fbSet(path, data) {
   const res = await fetch(`${FIREBASE_URL}${path}.json`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   })
   if (!res.ok) throw new Error('Firebase write failed')
@@ -52,8 +56,7 @@ async function fbSet(path, data) {
 
 async function fbPush(path, data) {
   const res = await fetch(`${FIREBASE_URL}${path}.json`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   })
   if (!res.ok) throw new Error('Firebase push failed')
@@ -69,6 +72,8 @@ function Overlay() {
   const [active, setActive] = useState(DEFAULT_ACTIVE)
   const lastTs = useRef(0)
   const iframeRef = useRef(null)
+  const videoRef = useRef(null)
+  const autoClearTimer = useRef(null)
 
   useEffect(() => {
     const poll = async () => {
@@ -86,6 +91,7 @@ function Overlay() {
   }, [])
 
   const advanceQueue = useCallback(async () => {
+    if (autoClearTimer.current) clearTimeout(autoClearTimer.current)
     try {
       const queue = await fbGet('/queue')
       const items = queue ? Object.entries(queue).sort((a, b) => a[1].addedAt - b[1].addedAt) : []
@@ -94,7 +100,6 @@ function Overlay() {
         const nextActive = { ...next, active: true, timestamp: Date.now() }
         await fbSet('/active', nextActive)
         await fbDelete(`/queue/${key}`)
-        // Add to history
         await fbPush('/history', { ...next, playedAt: Date.now() })
         lastTs.current = nextActive.timestamp
         setActive(nextActive)
@@ -107,54 +112,33 @@ function Overlay() {
     } catch (_) {}
   }, [])
 
-  // YouTube ad blocking — more effective when served locally via npm run dev
+  // YouTube ad blocking
   useEffect(() => {
-    if (!active.active || !parseYouTubeId(active.url || '')) return
+    const urls = active.urls || []
+    const ytUrl = urls.find(u => parseYouTubeId(u))
+    if (!active.active || !ytUrl) return
     const tryBlock = () => {
       try {
         const iframe = iframeRef.current
         if (!iframe) return
         const doc = iframe.contentDocument || iframe.contentWindow?.document
         if (!doc) return
-        // Click any skip button
-        const skip = doc.querySelector([
-          '.ytp-ad-skip-button',
-          '.ytp-skip-ad-button',
-          '.ytp-ad-skip-button-modern',
-          '.ytp-skip-ad-button-modern',
-          '[class*="skip-ad"]',
-        ].join(', '))
+        const skip = doc.querySelector('.ytp-ad-skip-button, .ytp-skip-ad-button, .ytp-ad-skip-button-modern, .ytp-skip-ad-button-modern')
         if (skip) skip.click()
-        // Fast-forward ad video to end
         const adVid = doc.querySelector('.ad-showing video, .ytp-ad-player-overlay ~ video')
-        if (adVid) {
-          adVid.muted = true
-          if (adVid.duration && isFinite(adVid.duration)) adVid.currentTime = adVid.duration
-        }
-        // Remove ad overlay UI
-        doc.querySelectorAll([
-          '.ytp-ad-player-overlay-layout',
-          '.ytp-ad-player-overlay',
-          '.ytp-ad-text-overlay',
-          '.ytp-promoted-video',
-          '.ytp-ad-progress-list',
-        ].join(', ')).forEach(el => el.remove())
-        // Try YouTube player API directly
+        if (adVid) { adVid.muted = true; if (adVid.duration && isFinite(adVid.duration)) adVid.currentTime = adVid.duration }
+        doc.querySelectorAll('.ytp-ad-player-overlay-layout, .ytp-ad-player-overlay, .ytp-ad-text-overlay, .ytp-promoted-video, .ytp-ad-progress-list').forEach(el => el.remove())
         const player = doc.getElementById('movie_player')
         if (player?.getAdState && player.getAdState() !== -1) {
-          try {
-            const dur = player.getDuration?.()
-            if (dur) player.seekTo?.(dur)
-            player.playVideo?.()
-          } catch (_) {}
+          try { const dur = player.getDuration?.(); if (dur) player.seekTo?.(dur); player.playVideo?.() } catch (_) {}
         }
       } catch (_) {}
     }
     const id = setInterval(tryBlock, 100)
     return () => clearInterval(id)
-  }, [active.active, active.url, active.timestamp])
+  }, [active.active, active.urls, active.timestamp])
 
-  // YouTube ended detection
+  // YouTube ended detection via postMessage
   useEffect(() => {
     const handler = (e) => {
       try {
@@ -169,7 +153,23 @@ function Overlay() {
     return () => window.removeEventListener('message', handler)
   }, [advanceQueue, active.loop])
 
-  const ytId = active.url ? parseYouTubeId(active.url) : null
+  // Fallback autoclear timer based on endAt
+  useEffect(() => {
+    if (autoClearTimer.current) clearTimeout(autoClearTimer.current)
+    if (!active.active || !active.endAt || active.loop) return
+    const startSecs = active.startAt || 0
+    const endSecs = active.endAt
+    const duration = (endSecs - startSecs) * 1000
+    if (duration > 0) {
+      autoClearTimer.current = setTimeout(() => advanceQueue(), duration + 500)
+    }
+    return () => clearTimeout(autoClearTimer.current)
+  }, [active.active, active.startAt, active.endAt, active.loop, active.timestamp, advanceQueue])
+
+  const urls = active.urls || []
+  const videoUrl = urls.find(u => detectType(u) === 'video') || ''
+  const imageUrls = urls.filter(u => detectType(u) === 'image')
+  const ytId = parseYouTubeId(videoUrl)
   const startSecs = active.startAt || 0
   const endSecs = active.endAt || 0
 
@@ -177,18 +177,25 @@ function Overlay() {
     position: 'absolute',
     left: `${active.boxX}%`, top: `${active.boxY}%`,
     width: `${active.boxW}%`, height: `${active.boxH}%`,
-    overflow: 'hidden',
+    overflow: 'hidden', background: 'transparent',
   }
 
   return (
     <div style={{ width: '100vw', height: '100vh', background: 'transparent', position: 'relative', overflow: 'hidden' }}>
       {active.active && (
         <div style={boxStyle}>
-          {active.type === 'image' && (
-            <img key={active.timestamp} src={active.url} alt=""
-              style={{ width: '100%', height: '100%', objectFit: active.fit || 'contain' }} />
-          )}
-          {active.type === 'video' && ytId && (
+          {/* Multiple images — stacked on top of each other */}
+          {imageUrls.map((url, i) => (
+            <img key={`${active.timestamp}-${i}`} src={url} alt=""
+              style={{
+                position: 'absolute', inset: 0,
+                width: '100%', height: '100%',
+                objectFit: active.fit || 'contain',
+                background: 'transparent',
+              }} />
+          ))}
+          {/* YouTube / Shorts */}
+          {videoUrl && ytId && (
             <div style={{ width: '100%', height: '100%', overflow: 'hidden', position: 'relative' }}>
               <iframe key={active.timestamp} ref={iframeRef}
                 src={`https://www.youtube.com/embed/${ytId}?autoplay=1&loop=${active.loop ? 1 : 0}&playlist=${ytId}&enablejsapi=1&start=${startSecs}${endSecs > 0 ? `&end=${endSecs}` : ''}&origin=${encodeURIComponent(window.location.origin)}&rel=0`}
@@ -196,12 +203,20 @@ function Overlay() {
                 style={{ width: '100%', height: 'calc(100% + 80px)', border: 'none', marginBottom: '-80px' }} />
             </div>
           )}
-          {active.type === 'video' && !ytId && (
-            <video key={active.timestamp} src={active.url} autoPlay loop={active.loop}
+          {/* Direct video */}
+          {videoUrl && !ytId && (
+            <video key={active.timestamp} ref={videoRef} src={videoUrl} autoPlay loop={active.loop}
               onEnded={() => { if (!active.loop) advanceQueue() }}
-              onLoadedMetadata={e => { if (startSecs > 0) e.target.currentTime = startSecs }}
-              onTimeUpdate={e => { if (endSecs > 0 && e.target.currentTime >= endSecs) { e.target.pause(); if (!active.loop) advanceQueue() } }}
-              style={{ width: '100%', height: '100%', objectFit: active.fit || 'contain' }} />
+              onLoadedMetadata={e => {
+                if (startSecs > 0) e.target.currentTime = startSecs
+              }}
+              onTimeUpdate={e => {
+                if (endSecs > 0 && e.target.currentTime >= endSecs) {
+                  e.target.pause()
+                  if (!active.loop) advanceQueue()
+                }
+              }}
+              style={{ width: '100%', height: '100%', objectFit: active.fit || 'contain', background: 'transparent' }} />
           )}
         </div>
       )}
@@ -276,9 +291,8 @@ function ControlPanel() {
   const [pw, setPw] = useState('')
   const [modName, setModName] = useState('')
   const [pwErr, setPwErr] = useState('')
-  const [url, setUrl] = useState('')
+  const [urls, setUrls] = useState([''])  // array of URL inputs
   const [label, setLabel] = useState('')
-  const [volume, setVolume] = useState(80)
   const [loop, setLoop] = useState(false)
   const [fit, setFit] = useState('contain')
   const [startAt, setStartAt] = useState('')
@@ -289,10 +303,11 @@ function ControlPanel() {
   const [activeState, setActiveState] = useState(DEFAULT_ACTIVE)
   const [queue, setQueue] = useState([])
   const [history, setHistory] = useState([])
+  const [submissions, setSubmissions] = useState([])
   const [presets, setPresets] = useState([])
   const [presetName, setPresetName] = useState('')
   const [box, setBox] = useState({ boxX: 25, boxY: 25, boxW: 50, boxH: 50 })
-  const [tab, setTab] = useState('send') // send | queue | history
+  const [tab, setTab] = useState('send')
   const boxPushTimer = useRef(null)
 
   useEffect(() => {
@@ -306,17 +321,14 @@ function ControlPanel() {
     if (!authed) return
     const poll = async () => {
       try {
-        const [act, q, hist] = await Promise.all([
-          fbGet('/active'),
-          fbGet('/queue'),
-          fbGet('/history'),
-        ])
+        const [act, q, hist, subs] = await Promise.all([fbGet('/active'), fbGet('/queue'), fbGet('/history'), fbGet('/submissions')])
         if (act) {
           setActiveState(act)
           setBox({ boxX: act.boxX ?? 25, boxY: act.boxY ?? 25, boxW: act.boxW ?? 50, boxH: act.boxH ?? 50 })
         }
         setQueue(q ? Object.entries(q).sort((a, b) => a[1].addedAt - b[1].addedAt).map(([k, v]) => ({ key: k, ...v })) : [])
         setHistory(hist ? Object.entries(hist).sort((a, b) => b[1].playedAt - a[1].playedAt).slice(0, 30).map(([k, v]) => ({ key: k, ...v })) : [])
+        setSubmissions(subs ? Object.entries(subs).filter(([, v]) => v.status === 'pending').sort((a, b) => a[1].submittedAt - b[1].submittedAt).map(([k, v]) => ({ key: k, ...v })) : [])
       } catch (_) {}
     }
     poll()
@@ -326,23 +338,23 @@ function ControlPanel() {
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(''), 2500) }
 
+  const validUrls = urls.filter(u => u.trim() && detectType(u.trim()))
+
   const buildItem = () => ({
-    type: detectType(url.trim()),
-    url: url.trim(), label, modName,
-    volume, loop, fit,
+    urls: validUrls,
+    type: validUrls.length === 1 ? detectType(validUrls[0]) : (validUrls.some(u => detectType(u) === 'video') ? 'video' : 'image'),
+    label, modName, loop, fit,
     startAt: parseTimestamp(startAt),
     endAt: parseTimestamp(endAt),
     ...box,
   })
 
   const handleSendNow = async () => {
-    if (!url.trim()) { setUrlErr('Enter a URL'); return }
-    const type = detectType(url.trim())
-    if (!type) { setUrlErr('Must be a YouTube link, video or image URL'); return }
+    if (validUrls.length === 0) { setUrlErr('Enter at least one valid URL'); return }
     setUrlErr('')
     setSaving(true)
     try {
-      const item = { ...buildItem(), type, active: true, timestamp: Date.now() }
+      const item = { ...buildItem(), active: true, timestamp: Date.now() }
       await fbSet('/active', item)
       await fbPush('/history', { ...item, playedAt: Date.now() })
       setActiveState(item)
@@ -352,15 +364,12 @@ function ControlPanel() {
   }
 
   const handleAddToQueue = async () => {
-    if (!url.trim()) { setUrlErr('Enter a URL'); return }
-    const type = detectType(url.trim())
-    if (!type) { setUrlErr('Must be a YouTube link, video or image URL'); return }
+    if (validUrls.length === 0) { setUrlErr('Enter at least one valid URL'); return }
     setUrlErr('')
     setSaving(true)
     try {
-      await fbPush('/queue', { ...buildItem(), type, addedAt: Date.now() })
+      await fbPush('/queue', { ...buildItem(), addedAt: Date.now() })
       showToast('Added to queue')
-      // If nothing active, play immediately
       const act = await fbGet('/active')
       if (!act || !act.active) {
         const q = await fbGet('/queue')
@@ -379,11 +388,43 @@ function ControlPanel() {
 
   const handleClear = async () => {
     setSaving(true)
-    try {
-      await fbSet('/active', { ...DEFAULT_ACTIVE, timestamp: Date.now() })
-      showToast('Overlay cleared')
-    } catch { showToast('Firebase error') }
+    try { await fbSet('/active', { ...DEFAULT_ACTIVE, timestamp: Date.now() }); showToast('Overlay cleared') }
+    catch { showToast('Firebase error') }
     setSaving(false)
+  }
+
+  const approveSubmission = async (sub) => {
+    try {
+      // Mark as approved so bot updates Discord reaction
+      await fbSet(`/submissions/${sub.key}`, { ...sub, status: 'approved' })
+      // Add to queue
+      await fbPush('/queue', {
+        urls: [sub.url], type: 'video', label: `${sub.submittedBy}'s submission`,
+        modName: modName, loop: false, fit: 'contain', startAt: 0, endAt: 0,
+        ...box, addedAt: Date.now(),
+      })
+      showToast(`Approved — added to queue`)
+      // If nothing active, play immediately
+      const act = await fbGet('/active')
+      if (!act || !act.active) {
+        const q = await fbGet('/queue')
+        const items = q ? Object.entries(q).sort((a, b) => a[1].addedAt - b[1].addedAt) : []
+        if (items.length > 0) {
+          const [key, next] = items[0]
+          const nextActive = { ...next, active: true, timestamp: Date.now() }
+          await fbSet('/active', nextActive)
+          await fbDelete(`/queue/${key}`)
+          await fbPush('/history', { ...next, playedAt: Date.now() })
+        }
+      }
+    } catch { showToast('Error approving') }
+  }
+
+  const rejectSubmission = async (sub) => {
+    try {
+      await fbSet(`/submissions/${sub.key}`, { ...sub, status: 'rejected' })
+      showToast('Rejected')
+    } catch { showToast('Error rejecting') }
   }
 
   const removeFromQueue = async (key) => {
@@ -406,8 +447,8 @@ function ControlPanel() {
   }, [])
 
   const savePreset = () => {
-    if (!url.trim() || !presetName.trim()) return
-    const p = { name: presetName, url, label, volume, loop, fit, startAt, endAt }
+    if (validUrls.length === 0 || !presetName.trim()) return
+    const p = { name: presetName, urls, label, loop, fit, startAt, endAt }
     const updated = [...presets.filter(x => x.name !== presetName), p]
     setPresets(updated)
     localStorage.setItem('stream-mod-presets', JSON.stringify(updated))
@@ -415,12 +456,11 @@ function ControlPanel() {
     showToast('Preset saved')
   }
 
-  const loadPreset = (p) => {
-    setUrl(p.url); setLabel(p.label); setVolume(p.volume)
-    setLoop(p.loop); setFit(p.fit); setStartAt(p.startAt || ''); setEndAt(p.endAt || '')
-  }
+  const hasVideo = urls.some(u => u.trim() && detectType(u.trim()) === 'video')
 
-  const isVideoUrl = (u) => u && (parseYouTubeId(u) || /\.(mp4|webm|ogg|mov)(\?|$)/i.test(u))
+  const addUrlField = () => setUrls([...urls, ''])
+  const updateUrl = (i, val) => { const u = [...urls]; u[i] = val; setUrls(u) }
+  const removeUrl = (i) => setUrls(urls.length > 1 ? urls.filter((_, idx) => idx !== i) : [''])
 
   if (!authed) {
     return (
@@ -437,19 +477,15 @@ function ControlPanel() {
             onKeyDown={e => {
               if (e.key !== 'Enter') return
               if (!modName.trim()) { setPwErr('Enter your name'); return }
-              if (pw === MOD_PASSWORD) {
-                localStorage.setItem('stream-mod-name', modName.trim())
-                setAuthed(true)
-              } else setPwErr('Wrong password')
+              if (pw === MOD_PASSWORD) { localStorage.setItem('stream-mod-name', modName.trim()); setAuthed(true) }
+              else setPwErr('Wrong password')
             }}
             style={{ ...s.input, marginBottom: 8 }} />
           {pwErr && <div style={s.err}>{pwErr}</div>}
           <button style={{ ...s.btn, width: '100%', marginTop: 8 }} onClick={() => {
             if (!modName.trim()) { setPwErr('Enter your name'); return }
-            if (pw === MOD_PASSWORD) {
-              localStorage.setItem('stream-mod-name', modName.trim())
-              setAuthed(true)
-            } else setPwErr('Wrong password')
+            if (pw === MOD_PASSWORD) { localStorage.setItem('stream-mod-name', modName.trim()); setAuthed(true) }
+            else setPwErr('Wrong password')
           }}>Sign in</button>
         </div>
       </div>
@@ -481,23 +517,20 @@ function ControlPanel() {
             </span>
           </div>
           <div style={{ position: 'relative', width: '100%', paddingBottom: '56.25%', borderRadius: 8, overflow: 'hidden', background: '#000' }}>
-            <iframe
-              src="https://player.twitch.tv/?channel=beccahtw&parent=dergummibaer.github.io&muted=true"
-              allowFullScreen
-              style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', border: 'none' }} />
+            <iframe src="https://player.twitch.tv/?channel=beccahtw&parent=dergummibaer.github.io&parent=localhost&muted=true"
+              allowFullScreen style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', border: 'none' }} />
             <PreviewBox box={box} onChange={handleBoxChange} />
           </div>
         </div>
 
-        {/* Live bar */}
         {activeState.active && (
           <div style={s.liveBar}>
             <div style={{ minWidth: 0 }}>
               <span style={{ fontWeight: 500, color: '#15803d', fontSize: 14 }}>
-                {activeState.label || activeState.url.slice(0, 50)}
+                {activeState.label || (activeState.urls || []).join(', ').slice(0, 50)}
               </span>
               <span style={{ fontSize: 12, color: '#16a34a', marginLeft: 8, opacity: 0.8 }}>
-                {activeState.type} · sent by {activeState.modName || 'unknown'}
+                {activeState.type} · {activeState.modName || 'unknown'}
                 {activeState.startAt > 0 && ` · @${activeState.startAt}s`}
                 {activeState.endAt > 0 && ` → ${activeState.endAt}s`}
               </span>
@@ -506,40 +539,46 @@ function ControlPanel() {
           </div>
         )}
 
-        {/* Queue badge */}
         {queue.length > 0 && (
           <div style={{ ...s.liveBar, background: '#1e1b4b', borderColor: '#4f46e5' }}>
             <span style={{ fontSize: 13, color: '#a5b4fc' }}>
-              {queue.length} item{queue.length > 1 ? 's' : ''} in queue — next: <strong>{queue[0].label || queue[0].url.slice(0, 40)}</strong>
+              {queue.length} in queue — next: <strong>{queue[0].label || (queue[0].urls || []).join(', ').slice(0, 40)}</strong>
             </span>
           </div>
         )}
 
         {/* Tabs */}
         <div style={{ display: 'flex', gap: 4, marginBottom: 12 }}>
-          {['send', 'queue', 'history'].map(t => (
+          {['send', 'queue', 'history', 'submissions'].map(t => (
             <button key={t} onClick={() => setTab(t)} style={{
               ...s.tabBtn,
               background: tab === t ? '#3b82f6' : 'none',
               color: tab === t ? '#fff' : '#94a3b8',
               borderColor: tab === t ? '#3b82f6' : '#334155',
             }}>
-              {t === 'send' ? 'Send' : t === 'queue' ? `Queue ${queue.length > 0 ? `(${queue.length})` : ''}` : 'History'}
+              {t === 'send' ? 'Send' : t === 'queue' ? `Queue${queue.length > 0 ? ` (${queue.length})` : ''}` : t === 'submissions' ? `Submissions${submissions.length > 0 ? ` (${submissions.length})` : ''}` : 'History'}
             </button>
           ))}
         </div>
 
-        {/* Send tab */}
         {tab === 'send' && (
           <div style={s.card}>
-            <label style={s.label}>URL</label>
-            <input type="url" placeholder="YouTube link, .mp4, .webm, .jpg, .png, .gif…"
-              value={url} onChange={e => { setUrl(e.target.value); setUrlErr('') }}
-              style={{ ...s.input, marginBottom: urlErr ? 4 : 12 }} />
+            <label style={s.label}>URL{urls.length > 1 ? 's' : ''}</label>
+            {urls.map((u, i) => (
+              <div key={i} style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
+                <input type="url" placeholder={i === 0 ? 'YouTube, Shorts, .mp4, .jpg, .png…' : 'Add another image URL…'}
+                  value={u} onChange={e => { updateUrl(i, e.target.value); setUrlErr('') }}
+                  style={{ ...s.input, flex: 1, marginBottom: 0 }} />
+                {urls.length > 1 && (
+                  <button style={{ ...s.smBtn, padding: '4px 8px' }} onClick={() => removeUrl(i)}>✕</button>
+                )}
+              </div>
+            ))}
+            <button style={{ ...s.smBtn, marginBottom: 12, marginTop: 2 }} onClick={addUrlField}>+ Add image</button>
             {urlErr && <div style={{ ...s.err, marginBottom: 8 }}>{urlErr}</div>}
 
             <label style={s.label}>Label (optional)</label>
-            <input type="text" placeholder="e.g. Raid gif, hype clip…"
+            <input type="text" placeholder="e.g. Jumpscare, raid gif…"
               value={label} onChange={e => setLabel(e.target.value)}
               style={{ ...s.input, marginBottom: 12 }} />
 
@@ -552,15 +591,9 @@ function ControlPanel() {
                   <option value="fill">Stretch</option>
                 </select>
               </div>
-              <div>
-                <label style={s.label}>Volume — {volume}%</label>
-                <input type="range" min={0} max={100} value={volume}
-                  onChange={e => setVolume(+e.target.value)}
-                  style={{ width: '100%', marginTop: 6 }} />
-              </div>
             </div>
 
-            {isVideoUrl(url) && (
+            {hasVideo && (
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
                 <div>
                   <label style={s.label}>Start at</label>
@@ -575,10 +608,12 @@ function ControlPanel() {
               </div>
             )}
 
-            <label style={{ ...s.label, display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginBottom: 16 }}>
-              <input type="checkbox" checked={loop} onChange={e => setLoop(e.target.checked)} />
-              Loop video
-            </label>
+            {hasVideo && (
+              <label style={{ ...s.label, display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginBottom: 16 }}>
+                <input type="checkbox" checked={loop} onChange={e => setLoop(e.target.checked)} />
+                Loop video
+              </label>
+            )}
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
               <button style={{ ...s.btn, background: '#3b82f6' }} onClick={handleSendNow} disabled={saving}>
@@ -589,7 +624,6 @@ function ControlPanel() {
               </button>
             </div>
 
-            {/* Presets */}
             <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid #334155' }}>
               <h3 style={{ ...s.h3, marginBottom: 10 }}>Presets</h3>
               {presets.length === 0 && <p style={{ ...s.sub, marginBottom: 10 }}>No presets yet.</p>}
@@ -597,8 +631,11 @@ function ControlPanel() {
                 <div key={p.name} style={s.presetRow}>
                   <span style={{ fontSize: 13, fontWeight: 500 }}>{p.name}</span>
                   <div style={{ display: 'flex', gap: 6 }}>
-                    <button style={s.smBtn} onClick={() => loadPreset(p)}>Load</button>
-                    <button style={s.smBtn} onClick={() => { loadPreset(p); setUrl(p.url) }}>Load</button>
+                    <button style={s.smBtn} onClick={() => {
+                      setUrls(p.urls || [p.url || '']); setLabel(p.label || '')
+                      setLoop(p.loop || false); setFit(p.fit || 'contain')
+                      setStartAt(p.startAt || ''); setEndAt(p.endAt || '')
+                    }}>Load</button>
                     <button style={{ ...s.smBtn, color: '#ef4444', borderColor: '#fca5a5' }}
                       onClick={() => { const u = presets.filter(x => x.name !== p.name); setPresets(u); localStorage.setItem('stream-mod-presets', JSON.stringify(u)) }}>✕</button>
                   </div>
@@ -608,13 +645,12 @@ function ControlPanel() {
                 <input type="text" placeholder="Preset name…" value={presetName}
                   onChange={e => setPresetName(e.target.value)}
                   style={{ ...s.input, flex: 1, marginBottom: 0 }} />
-                <button style={s.btn} onClick={savePreset}>Save</button>
+                <button style={{ ...s.btn, background: '#3b82f6' }} onClick={savePreset}>Save</button>
               </div>
             </div>
           </div>
         )}
 
-        {/* Queue tab */}
         {tab === 'queue' && (
           <div style={s.card}>
             <h3 style={s.h3}>Queue</h3>
@@ -623,7 +659,7 @@ function ControlPanel() {
               <div key={item.key} style={s.presetRow}>
                 <div style={{ minWidth: 0 }}>
                   <span style={{ fontSize: 12, color: '#64748b', marginRight: 8 }}>#{i + 1}</span>
-                  <span style={{ fontSize: 14, fontWeight: 500 }}>{item.label || item.url.slice(0, 45)}</span>
+                  <span style={{ fontSize: 14, fontWeight: 500 }}>{item.label || (item.urls || []).join(', ').slice(0, 45)}</span>
                   <span style={{ fontSize: 12, color: '#64748b', marginLeft: 8 }}>{item.modName}</span>
                 </div>
                 <button style={{ ...s.smBtn, color: '#ef4444', borderColor: '#fca5a5' }}
@@ -633,27 +669,60 @@ function ControlPanel() {
           </div>
         )}
 
-        {/* History tab */}
         {tab === 'history' && (
           <div style={s.card}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
               <h3 style={{ ...s.h3, marginBottom: 0 }}>History</h3>
-              {history.length > 0 && (
-                <button style={{ ...s.smBtn, fontSize: 12 }} onClick={clearHistory}>Clear all</button>
-              )}
+              {history.length > 0 && <button style={s.smBtn} onClick={clearHistory}>Clear all</button>}
             </div>
             {history.length === 0 && <p style={s.sub}>Nothing played yet.</p>}
             {history.map(item => (
               <div key={item.key} style={s.presetRow}>
                 <div style={{ minWidth: 0 }}>
-                  <span style={{ fontSize: 14, fontWeight: 500 }}>{item.label || item.url.slice(0, 45)}</span>
+                  <span style={{ fontSize: 14, fontWeight: 500 }}>{item.label || (item.urls || []).join(', ').slice(0, 45)}</span>
                   <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
                     {item.modName} · {formatTime(item.playedAt)} · {item.type}
                   </div>
                 </div>
-                <button style={s.smBtn} onClick={() => { setUrl(item.url); setLabel(item.label || ''); setVolume(item.volume || 80); setLoop(item.loop || false); setFit(item.fit || 'contain'); setTab('send') }}>
-                  Reuse
-                </button>
+                <button style={s.smBtn} onClick={() => {
+                  setUrls(item.urls || [item.url || '']); setLabel(item.label || '')
+                  setLoop(item.loop || false); setFit(item.fit || 'contain'); setTab('send')
+                }}>Reuse</button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {tab === 'submissions' && (
+          <div style={s.card}>
+            <h3 style={s.h3}>Viewer Submissions</h3>
+            {submissions.length === 0 && <p style={s.sub}>No pending submissions.</p>}
+            {submissions.map(sub => (
+              <div key={sub.key} style={{ ...s.presetRow, flexDirection: 'column', alignItems: 'flex-start', gap: 8, paddingBottom: 12 }}>
+                <div style={{ width: '100%' }}>
+                  <span style={{ fontSize: 13, fontWeight: 500, color: '#f1f5f9' }}>{sub.submittedBy}</span>
+                  <span style={{ fontSize: 12, color: '#64748b', marginLeft: 8 }}>{formatTime(sub.submittedAt)}</span>
+                  <div style={{ marginTop: 4 }}>
+                    <a href={sub.url} target="_blank" rel="noreferrer"
+                      style={{ fontSize: 12, color: '#60a5fa', wordBreak: 'break-all' }}>
+                      {sub.url.slice(0, 60)}{sub.url.length > 60 ? '…' : ''}
+                    </a>
+                  </div>
+                </div>
+                {/* YouTube thumbnail preview */}
+                {parseYouTubeId(sub.url) && (
+                  <img
+                    src={`https://img.youtube.com/vi/${parseYouTubeId(sub.url)}/mqdefault.jpg`}
+                    alt="thumbnail"
+                    style={{ width: '100%', maxWidth: 240, borderRadius: 6, display: 'block' }}
+                  />
+                )}
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button style={{ ...s.btn, background: '#16a34a', padding: '6px 16px', fontSize: 13 }}
+                    onClick={() => approveSubmission(sub)}>✅ Approve</button>
+                  <button style={{ ...s.btn, background: '#dc2626', padding: '6px 16px', fontSize: 13 }}
+                    onClick={() => rejectSubmission(sub)}>❌ Reject</button>
+                </div>
               </div>
             ))}
           </div>
