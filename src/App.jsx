@@ -107,7 +107,7 @@ function Overlay() {
     } catch (_) {}
   }, [])
 
-  // YouTube ad blocking
+  // YouTube ad blocking — more effective when served locally via npm run dev
   useEffect(() => {
     if (!active.active || !parseYouTubeId(active.url || '')) return
     const tryBlock = () => {
@@ -116,15 +116,41 @@ function Overlay() {
         if (!iframe) return
         const doc = iframe.contentDocument || iframe.contentWindow?.document
         if (!doc) return
-        const skip = doc.querySelector('.ytp-ad-skip-button, .ytp-skip-ad-button, .ytp-ad-skip-button-modern')
+        // Click any skip button
+        const skip = doc.querySelector([
+          '.ytp-ad-skip-button',
+          '.ytp-skip-ad-button',
+          '.ytp-ad-skip-button-modern',
+          '.ytp-skip-ad-button-modern',
+          '[class*="skip-ad"]',
+        ].join(', '))
         if (skip) skip.click()
-        const adVid = doc.querySelector('.ad-showing video')
-        if (adVid && !adVid.paused) { adVid.muted = true; if (adVid.duration) adVid.currentTime = adVid.duration }
-        const adOverlay = doc.querySelector('.ytp-ad-player-overlay-layout')
-        if (adOverlay) adOverlay.remove()
+        // Fast-forward ad video to end
+        const adVid = doc.querySelector('.ad-showing video, .ytp-ad-player-overlay ~ video')
+        if (adVid) {
+          adVid.muted = true
+          if (adVid.duration && isFinite(adVid.duration)) adVid.currentTime = adVid.duration
+        }
+        // Remove ad overlay UI
+        doc.querySelectorAll([
+          '.ytp-ad-player-overlay-layout',
+          '.ytp-ad-player-overlay',
+          '.ytp-ad-text-overlay',
+          '.ytp-promoted-video',
+          '.ytp-ad-progress-list',
+        ].join(', ')).forEach(el => el.remove())
+        // Try YouTube player API directly
+        const player = doc.getElementById('movie_player')
+        if (player?.getAdState && player.getAdState() !== -1) {
+          try {
+            const dur = player.getDuration?.()
+            if (dur) player.seekTo?.(dur)
+            player.playVideo?.()
+          } catch (_) {}
+        }
       } catch (_) {}
     }
-    const id = setInterval(tryBlock, 200)
+    const id = setInterval(tryBlock, 100)
     return () => clearInterval(id)
   }, [active.active, active.url, active.timestamp])
 
@@ -656,7 +682,7 @@ const s = {
   label: { fontSize: 13, color: '#94a3b8', display: 'block', marginBottom: 6 },
   input: { width: '100%', boxSizing: 'border-box', background: '#0f172a', border: '1px solid #334155', borderRadius: 6, padding: '8px 10px', color: '#f1f5f9', fontSize: 14, outline: 'none', marginBottom: 0 },
   select: { width: '100%', background: '#0f172a', border: '1px solid #334155', borderRadius: 6, padding: '8px 10px', color: '#f1f5f9', fontSize: 14 },
-  btn: { background: '#3b82f6', backgroundColor: '#3b82f6', border: 'none', borderRadius: 6, padding: '9px 18px', color: '#fff', fontSize: 14, fontWeight: 500, cursor: 'pointer' },
+  btn: { border: 'none', borderRadius: 6, padding: '9px 18px', color: '#fff', fontSize: 14, fontWeight: 500, cursor: 'pointer' },
   tabBtn: { border: '1px solid', borderRadius: 6, padding: '7px 16px', fontSize: 13, fontWeight: 500, cursor: 'pointer' },
   smBtn: { background: 'none', border: '1px solid #334155', borderRadius: 6, padding: '4px 10px', color: '#cbd5e1', fontSize: 12, cursor: 'pointer' },
   clearBtn: { background: 'none', border: '1px solid #fca5a5', borderRadius: 6, padding: '4px 12px', color: '#ef4444', fontSize: 13, cursor: 'pointer', flexShrink: 0 },
