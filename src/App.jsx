@@ -193,7 +193,7 @@ function Overlay() {
 }
 
 // ─── Draggable/resizable preview box ─────────────────────────────────────────
-function PreviewBox({ item, onChange, onRemove, isNew }) {
+function PreviewBox({ item, onChange, onRemove, onReposition, isNew }) {
   const ref = useRef()
   const drag = useRef(null)
 
@@ -241,6 +241,15 @@ function PreviewBox({ item, onChange, onRemove, isNew }) {
       border: `2px solid ${color}`, boxSizing: 'border-box',
       background: `${color}26`,
     }}>
+      {/* Reposition button — only for live items */}
+      {!isNew && onReposition && (
+        <div onClick={() => onReposition(item)} style={{
+          position: 'absolute', top: -10, right: 14, width: 20, height: 20,
+          background: '#f59e0b', borderRadius: '50%', cursor: 'pointer',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: 11, color: '#fff', fontWeight: 700, zIndex: 20, lineHeight: 1,
+        }}>↺</div>
+      )}
       {/* Remove button */}
       <div onClick={() => onRemove(item.id)} style={{
         position: 'absolute', top: -10, right: -10, width: 20, height: 20,
@@ -391,6 +400,18 @@ function ControlPanel() {
     setSaving(false)
   }
 
+  const handleReposition = (item) => {
+    // Remove from live, load as pending so mod can reposition
+    fbDelete(`/items/${item.id}`)
+    setUrl(item.url)
+    setLabel(item.label || '')
+    setLoop(item.loop || false)
+    setFit(item.fit || 'contain')
+    setPendingItem({ ...item })
+    setTab('send')
+    showToast('Reposition it in the preview then hit Send')
+  }
+
   const handleRemoveItem = async (id) => {
     if (id === pendingItem?.id) { setPendingItem(null); return }
     try { await fbDelete(`/items/${id}`); showToast('Removed') } catch (_) {}
@@ -529,6 +550,7 @@ function ControlPanel() {
               <PreviewBox key={item.id} item={item}
                 onChange={handleBoxChange}
                 onRemove={handleRemoveItem}
+                onReposition={handleReposition}
                 isNew={item.id === pendingItem?.id} />
             ))}
           </div>
