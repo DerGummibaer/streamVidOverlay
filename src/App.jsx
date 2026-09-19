@@ -417,7 +417,9 @@ function ControlPanel() {
 
   const approveSubmission = async (sub) => {
     try {
+      // Mark as approved in Firebase so bot updates Discord reaction
       await fbSet(`/submissions/${sub.key}`, { ...sub, status: 'approved' })
+      // Load into the send form as a pending item so mod can position it first
       const id = genId()
       const item = {
         id, url: sub.url, type: detectType(sub.url) || 'video',
@@ -425,9 +427,11 @@ function ControlPanel() {
         loop: false, fit: 'contain', startAt: 0, endAt: 0,
         boxX: 25, boxY: 25, boxW: 50, boxH: 50, timestamp: Date.now(),
       }
-      await fbSet(`/items/${id}`, item)
-      await fbPush('/history', { ...item, playedAt: Date.now() })
-      showToast('Approved — now live')
+      setUrl(sub.url)
+      setLabel(`${sub.submittedBy}'s submission`)
+      setPendingItem(item)
+      setTab('send')
+      showToast(`Approved — position it in the preview then hit Send`)
     } catch { showToast('Error approving') }
   }
 
